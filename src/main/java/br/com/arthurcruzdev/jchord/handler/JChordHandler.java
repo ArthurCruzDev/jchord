@@ -6,7 +6,7 @@ import org.apache.thrift.TException;
 import java.nio.ByteBuffer;
 import java.util.List;
 
-public class ChordHandler implements Chord.Iface{
+public class JChordHandler implements Chord.Iface{
 
     @Override
     public void join(NodeInfo n) throws UnableToJoinChordException, TException {

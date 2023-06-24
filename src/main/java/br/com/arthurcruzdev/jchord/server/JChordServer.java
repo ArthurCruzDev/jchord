@@ -1,9 +1,11 @@
 package br.com.arthurcruzdev.jchord.server;
 
+import br.com.arthurcruzdev.jchord.interfaces.IIPDiscoveryService;
 import br.com.arthurcruzdev.jchord.interfaces.IKeyNodeIdentifierMaker;
 import br.com.arthurcruzdev.jchord.thrift.Chord;
-import br.com.arthurcruzdev.jchord.handler.ChordHandler;
+import br.com.arthurcruzdev.jchord.handler.JChordHandler;
 import br.com.arthurcruzdev.jchord.thrift.NodeInfo;
+import br.com.arthurcruzdev.jchord.utils.DefaultIPDiscoveryService;
 import br.com.arthurcruzdev.jchord.utils.DefaultKeyNoteIdentifierMaker;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.server.TNonblockingServer;
@@ -15,28 +17,27 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
-public class ChordServer {
-    private static final Logger log = LoggerFactory.getLogger(ChordServer.class);
-    private static ChordHandler chordHandler;
+public class JChordServer {
+    private static final Logger log = LoggerFactory.getLogger(JChordServer.class);
+    private static JChordHandler jChordHandler;
     private static Chord.Processor chordProcessor;
     private static final NodeInfo thisServerNode = new NodeInfo();
     private static boolean isInitialized = false;
     private static boolean isRootNode = false;
-    public static volatile ChordServer instance;
+    public static volatile JChordServer instance;
     private final IKeyNodeIdentifierMaker keyNodeIdentifierMaker;
+    private final IIPDiscoveryService ipDiscoveryService;
 
-    private ChordServer(final int port, final boolean isRootNode, final IKeyNodeIdentifierMaker keyNodeIdentifierMaker){
+    private JChordServer(final int port, final boolean isRootNode, final IKeyNodeIdentifierMaker keyNodeIdentifierMaker, final IIPDiscoveryService ipDiscoveryService){
         if(port < 0 || port > 65535){
             throw new IllegalArgumentException("Failed to create JChord server due to requested port number being invalid.");
         }
         thisServerNode.port = port;
-        ChordServer.isRootNode = isRootNode;
+        JChordServer.isRootNode = isRootNode;
         this.keyNodeIdentifierMaker = keyNodeIdentifierMaker;
+        this.ipDiscoveryService = ipDiscoveryService;
     }
 
     public void init(){
@@ -45,10 +46,8 @@ public class ChordServer {
             return;
         }
         log.info("Initializing JChord Server...");
-        Socket socket = new Socket();
         try{
-            socket.connect(new InetSocketAddress("google.com", 80));
-            thisServerNode.ip = socket.getLocalAddress().getHostAddress().toString();
+            thisServerNode.ip = this.ipDiscoveryService.discoverIP();
             log.info("Found local IP Address: {}", thisServerNode.ip);
             thisServerNode.id = this.keyNodeIdentifierMaker.getIdentifier(thisServerNode);
             log.info("Current server's defined ID: {}", thisServerNode.id);
@@ -58,8 +57,8 @@ public class ChordServer {
             throw new IllegalStateException("Failed to initialize JChord server due to unavailability of SHA-256 hash algorithm in the current machine");
         }
         try{
-            chordHandler = new ChordHandler();
-            chordProcessor = new Chord.Processor(chordHandler);
+            jChordHandler = new JChordHandler();
+            chordProcessor = new Chord.Processor(jChordHandler);
             TNonblockingServerTransport serverTransport = new TNonblockingServerSocket(thisServerNode.port);
             TServer server = new TNonblockingServer(
                     new TNonblockingServer
@@ -67,21 +66,22 @@ public class ChordServer {
                             .processor(chordProcessor)
                             .protocolFactory(new TCompactProtocol.Factory())
             );
-            server.serve();
             log.info("JChord Server Successfully Initialized");
+            log.info("JChord Server available on port: {}", thisServerNode.port);
+            server.serve();
         } catch (TTransportException e) {
             log.error("Failed to initialize JChord server at port {} due to: ", thisServerNode.port ,e);
             throw new RuntimeException(e);
         }
     }
 
-    public static ChordServer getInstance(final int port, final boolean isRootNode){
+    public static JChordServer getInstance(final int port, final boolean isRootNode){
         if(instance != null){
             return instance;
         }
-        synchronized (ChordServer.class){
+        synchronized (JChordServer.class){
             if(instance == null){
-                instance = new ChordServer(port, isRootNode, new DefaultKeyNoteIdentifierMaker());
+                instance = new JChordServer(port, isRootNode, new DefaultKeyNoteIdentifierMaker(), new DefaultIPDiscoveryService());
             }
             return instance;
         }
