@@ -8,17 +8,13 @@ import br.com.arthurcruzdev.jchord.utils.DefaultKeyNoteIdentifierMaker;
 import org.apache.thrift.TException;
 import org.apache.thrift.protocol.TCompactProtocol;
 import org.apache.thrift.protocol.TProtocol;
-import org.apache.thrift.server.TNonblockingServer;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.*;
-import org.apache.thrift.transport.layered.TFramedTransport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -96,6 +92,7 @@ public class JChordServer implements Chord.Iface{
             }
         }else{
             TTransport transport = null;
+            NodeInfo successor = null;
             try{
                 try{
                     transport = new TSocket(rootNode.getIp(),rootNode.getPort());
@@ -107,16 +104,80 @@ public class JChordServer implements Chord.Iface{
 
                 TProtocol protocol = new TCompactProtocol(transport);
                 Chord.Client client = new Chord.Client(protocol);
-                this.fingerTable.clear();
-                try{
-                    this.fingerTable.addAll(client.getFingerTable());
+                try {
+                    successor  = client.findSuccessor(this.thisServerNode.id);
                 } catch (TException e) {
-                    log.error("Failed to retrieve routing table from root node");
+                    log.error("Failed to find this JChord Server's successor while initializing routing table");
                     throw new RuntimeException(e);
                 }
             }finally{
                 if(transport != null){
                     transport.close();
+                }
+            }
+
+            try{
+                try{
+                    transport = new TSocket(successor.getIp(),successor.getPort());
+                    transport.open();
+                } catch (TTransportException e) {
+                    log.error("Failed to create transport to successor on {}:{} while initializing routing table", rootNode.getIp(), rootNode.getPort());
+                    throw new RuntimeException(e);
+                }
+
+                TProtocol protocol = new TCompactProtocol(transport);
+                Chord.Client client = new Chord.Client(protocol);
+                this.fingerTable.clear();
+                try{
+                    this.fingerTable.addAll(client.getFingerTable());
+                } catch (TException e) {
+                    log.error("Failed to retrieve routing table from successor");
+                    throw new RuntimeException(e);
+                }
+            }finally{
+                if(transport != null){
+                    transport.close();
+                }
+            }
+            int lastUsefulIndex = 1;
+            for(int i = 1; i <= IKeyNodeIdentifierMaker.NUM_BITS; i++){
+                long keyNumber = calculateFingerTableKeyNumberByIndex(i);
+                if(lastUsefulIndex != -1 && keyNumber > this.fingerTable.get(lastUsefulIndex).getId()){
+                    boolean found = false;
+                    for(int j = i+1; j < this.fingerTable.size(); j++){
+                        if(keyNumber <= this.fingerTable.get(j).getId()){
+                            this.fingerTable.set(i, this.fingerTable.get(j));
+                            lastUsefulIndex = j;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if(!found){
+                        lastUsefulIndex = -1;
+                    }
+                }else{
+                    try{
+                        try{
+                            transport = new TSocket(this.fingerTable.get(this.fingerTable.size() - 1).getIp(),this.fingerTable.get(this.fingerTable.size() - 1).getPort());
+                            transport.open();
+                        } catch (TTransportException e) {
+                            log.error("Failed to create transport to successor on {}:{} while initializing routing table", rootNode.getIp(), rootNode.getPort());
+                            throw new RuntimeException(e);
+                        }
+
+                        TProtocol protocol = new TCompactProtocol(transport);
+                        Chord.Client client = new Chord.Client(protocol);
+                        try{
+                            this.fingerTable.set(i, client.findSuccessor(keyNumber));
+                        } catch (TException e) {
+                            log.error("Failed to retrieve successor of id {}", keyNumber);
+                            throw new RuntimeException(e);
+                        }
+                    }finally{
+                        if(transport != null){
+                            transport.close();
+                        }
+                    }
                 }
             }
         }
@@ -126,10 +187,12 @@ public class JChordServer implements Chord.Iface{
 
     private void printFingerTable(){
         StringBuffer stringBuffer = new StringBuffer("\n");
-        for(int i = 0; i < this.fingerTable.size();i++){
+        for(int i = 1; i < this.fingerTable.size();i++){
             NodeInfo nodeInfo = this.fingerTable.get(i);
             stringBuffer
                     .append(i)
+                    .append(" | ")
+                    .append(calculateFingerTableKeyNumberByIndex(i))
                     .append(" | ")
                     .append(nodeInfo.getId())
                     .append(" -> ")
@@ -139,6 +202,9 @@ public class JChordServer implements Chord.Iface{
                     .append("\n");
         }
         log.info("Current JChord Server's routing table: {}", stringBuffer);
+    }
+    private long calculateFingerTableKeyNumberByIndex(int index){
+        return ( this.thisServerNode.id + (long) Math.pow(2.0, index - 1.0) ) % (long) Math.pow(2.0, IKeyNodeIdentifierMaker.NUM_BITS);
     }
     public static JChordServer getInstance(final int port, final NodeInfo rootNode){
         if(instance != null){
