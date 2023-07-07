@@ -1,4 +1,4 @@
-namespace java br.com.arthurcruzdev.jchord
+namespace java br.com.arthurcruzdev.jchord.thrift
 /*
 * Chord NodeInfo structure definition
 */
@@ -67,4 +67,5 @@ service Chord{
     NodeInfo closestPrecedingFinger(1:i64 id) throws(1:UnableToFindClosestPrecedingFingerException ex),
     list<binary> transferKeys(1:NodeInfo n) throws(1:UnableToTransferKeysException ex),
     void notify(1:NodeInfo n) throws(1:UnableToNotifyException ex),
+    list<NodeInfo> getFingerTable(),
 }
