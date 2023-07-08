@@ -61,7 +61,6 @@ exception UnableToNotifyException{
 * Chord Protocol Operations
 */
 service Chord{
-    void join(1:NodeInfo n) throws(1:UnableToJoinChordException ex),
     NodeInfo findSuccessor(1:i64 id) throws(1:UnableToFindSuccessorException ex),
     NodeInfo findPredecessor(1:i64 id) throws(1:UnableToFindPredecessorException ex),
     NodeInfo closestPrecedingFinger(1:i64 id) throws(1:UnableToFindClosestPrecedingFingerException ex),

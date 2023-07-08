@@ -146,7 +146,9 @@ public class JChordServer implements Chord.Iface{
     private long calculateFingerTableKeyNumberByIndex(long baseId, int index){
         return ( baseId + (long) Math.pow(2.0, index - 1.0) ) % (long) Math.pow(2.0, IKeyNodeIdentifierMaker.NUM_BITS);
     }
+    private void join(NodeInfo n) throws UnableToJoinChordException, TException {
 
+    }
     private static NodeInfo remoteFindSuccessor(NodeInfo node, long id){
         return remoteFindSuccessor(node.getIp(), node.getPort(), id);
     }
@@ -281,11 +283,6 @@ public class JChordServer implements Chord.Iface{
             }
             return instance;
         }
-    }
-
-    @Override
-    public void join(NodeInfo n) throws UnableToJoinChordException, TException {
-
     }
 
     @Override
