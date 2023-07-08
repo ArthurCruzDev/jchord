@@ -68,4 +68,6 @@ service Chord{
     void notify(1:NodeInfo n) throws(1:UnableToNotifyException ex),
     list<NodeInfo> getFingerTable(),
     NodeInfo getSuccessor(),
+    NodeInfo getPredecessor(),
+    void setPredecessor(1:NodeInfo n),
 }

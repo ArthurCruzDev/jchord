@@ -6,8 +6,7 @@ import br.com.arthurcruzdev.jchord.thrift.*;
 import br.com.arthurcruzdev.jchord.utils.DefaultIPDiscoveryService;
 import br.com.arthurcruzdev.jchord.utils.DefaultKeyNoteIdentifierMaker;
 import org.apache.thrift.TException;
-import org.apache.thrift.protocol.TCompactProtocol;
-import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.protocol.*;
 import org.apache.thrift.server.TServer;
 import org.apache.thrift.server.TThreadPoolServer;
 import org.apache.thrift.transport.*;
@@ -22,6 +21,7 @@ import java.util.List;
 
 public class JChordServer implements Chord.Iface{
     private static final Logger log = LoggerFactory.getLogger(JChordServer.class);
+    private static final TProtocolFactory T_PROTOCOL_FACTORY = new TCompactProtocol.Factory();
     private static boolean isInitialized = false;
     private static NodeInfo rootNode;
     public static volatile JChordServer instance;
@@ -63,13 +63,9 @@ public class JChordServer implements Chord.Iface{
                     new TThreadPoolServer
                             .Args(serverTransport)
                             .processor(new Chord.Processor(this))
-                            .protocolFactory(new TCompactProtocol.Factory())
+                            .protocolFactory(T_PROTOCOL_FACTORY)
             );
-            initializeFingerTable();
-
-            if(rootNode == null){
-
-            }
+            join();
             log.info("JChord Server Successfully Initialized");
             isInitialized = true;
             log.info("JChord Server available on port: {}", thisServerNode.port);
@@ -91,43 +87,29 @@ public class JChordServer implements Chord.Iface{
                 fingerTable.add(nodeInfo);
             }
         }else{
-            NodeInfo successor = remoteFindSuccessor(rootNode, this.thisServerNode.id);
+            NodeInfo successor = remoteFindSuccessor(rootNode, calculateFingerTableKeyNumberByIndex(this.thisServerNode.id, 1));
+            this.fingerTable.add(remoteGetPredecessor(successor));
+            this.fingerTable.add(successor);
+            remoteSetPredecessor(successor, this.thisServerNode);
 
-            this.fingerTable.clear();
-            this.fingerTable.addAll(remoteGetFingerTable(successor));
-
-            int lastUsefulIndex = 1;
-            for(int i = 1; i <= IKeyNodeIdentifierMaker.NUM_BITS; i++){
-                long keyNumber = calculateFingerTableKeyNumberByIndex(this.thisServerNode.id, i);
-                if(lastUsefulIndex != -1 && keyNumber < this.fingerTable.get(lastUsefulIndex).getId()){
-                    boolean found = false;
-                    for(int j = i+1; j < this.fingerTable.size(); j++){
-                        if(keyNumber <= this.fingerTable.get(j).getId()){
-                            this.fingerTable.set(i, this.fingerTable.get(j));
-                            lastUsefulIndex = j;
-                            found = true;
-                            break;
-                        }
-                    }
-                    if(!found){
-                        lastUsefulIndex = -1;
-                    }
+            for(int i = 1; i < IKeyNodeIdentifierMaker.NUM_BITS - 1; i++){
+                long nextStart = calculateFingerTableKeyNumberByIndex(thisServerNode.getId(), i+1);
+                long currentStart = calculateFingerTableKeyNumberByIndex(this.thisServerNode.getId(), i);
+                if(nextStart >= this.thisServerNode.getId() && nextStart <  currentStart){
+                    this.fingerTable.add(this.fingerTable.get(i));
                 }else{
-                    this.fingerTable.set(i,
-                                        remoteFindSuccessor(
-                                            this.fingerTable.get(this.fingerTable.size() - 1).getIp(),
-                                            this.fingerTable.get(this.fingerTable.size() - 1).getPort(), keyNumber)
-                                        );
+                    this.fingerTable.add(remoteFindSuccessor(rootNode, nextStart));
                 }
             }
+
         }
         this.printFingerTable();
         log.info("Successfully initialized JChord Server's routing table");
     }
 
     private void printFingerTable(){
-        StringBuffer stringBuffer = new StringBuffer("\nIndex\t|KeyNumber\t|NodeId\t\t|NodeIP\t\t\t\t|NodePort\n");
-        for(int i = 1; i < this.fingerTable.size();i++){
+        StringBuffer stringBuffer = new StringBuffer("\nIndex\t\t|KeyNumber\t|NodeId\t\t|NodeIP\t\t\t\t|NodePort\n");
+        for(int i = 0; i < this.fingerTable.size();i++){
             NodeInfo nodeInfo = this.fingerTable.get(i);
             stringBuffer
                     .append(i)
@@ -139,51 +121,77 @@ public class JChordServer implements Chord.Iface{
                     .append(nodeInfo.ip)
                     .append("\t| ")
                     .append(nodeInfo.port)
-                    .append("\n");
+                    .append(i == 0 ? "\t| *Predecessor\n" : "\n");
         }
         log.info("Current JChord Server's routing table: {}", stringBuffer);
     }
     private long calculateFingerTableKeyNumberByIndex(long baseId, int index){
         return ( baseId + (long) Math.pow(2.0, index - 1.0) ) % (long) Math.pow(2.0, IKeyNodeIdentifierMaker.NUM_BITS);
     }
-    private void join(NodeInfo n) throws UnableToJoinChordException, TException {
+    private void join() throws UnableToJoinChordException, TException {
+        this.initializeFingerTable();
+        if(rootNode != null){
+            updateOthers();
+        }
+    }
+    private void updateOthers(){
 
     }
-    private static NodeInfo remoteFindSuccessor(NodeInfo node, long id){
+    private NodeInfo remoteFindSuccessor(NodeInfo node, long id){
+        if(node.equals(this.thisServerNode)){
+            try{
+                this.findSuccessor(id);
+            }catch(TException e){
+                log.error("Failed to find sucessor for id: {}", id);
+                throw new RuntimeException(e);
+            }
+        }
         return remoteFindSuccessor(node.getIp(), node.getPort(), id);
     }
-    private static NodeInfo remoteFindSuccessor(String ip, int port, long id){
+    private NodeInfo remoteFindSuccessor(String ip, int port, long id){
         TTransport transport = null;
         NodeInfo successor = null;
         try{
-            try{
-                transport = new TSocket(ip, port);
-                transport.open();
-            } catch (TTransportException e) {
-                log.error("Failed to create transport to node on {}:{}", rootNode.getIp(), rootNode.getPort());
-                throw new RuntimeException(e);
-            }
-
-            TProtocol protocol = new TCompactProtocol(transport);
+//            try{
+//                transport = new TSocket(ip, port);
+//                transport.open();
+//            } catch (TTransportException e) {
+//                log.error("Failed to create transport to node on {}:{}", ip, port);
+//                throw new RuntimeException(e);
+//            }
+//
+//            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
+//            Chord.Client client = new Chord.Client(protocol);
+//            try {
+//                successor  = client.findSuccessor(id);
+//
+//            } catch (TException e) {
+//                log.error("Failed to find this JChord Server's successor while initializing routing table");
+//                throw new RuntimeException(e);
+//            }
+            transport = new TSocket(ip, port);
+            transport.open();
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
             Chord.Client client = new Chord.Client(protocol);
-            try {
-                successor  = client.findSuccessor(id);
-            } catch (TException e) {
-                log.error("Failed to find this JChord Server's successor while initializing routing table");
-                throw new RuntimeException(e);
-            }
+            successor  = client.findSuccessor(id);
+            transport.close();
+        }catch(Exception e){
+            log.error("{}", e);
         }finally{
             if(transport != null){
-                transport.close();
+
             }
         }
         return successor;
     }
 
-    private static List<NodeInfo> remoteGetFingerTable(NodeInfo node){
+    private List<NodeInfo> remoteGetFingerTable(NodeInfo node){
+        if(node.equals(this.thisServerNode)){
+            return this.fingerTable;
+        }
         return remoteGetFingerTable(node.getIp(), node.getPort());
     }
-    private static List<NodeInfo> remoteGetFingerTable(String ip, int port){
+    private List<NodeInfo> remoteGetFingerTable(String ip, int port){
         List<NodeInfo> remoteNodeFingerTable = null;
         TTransport transport = null;
         try{
@@ -191,15 +199,16 @@ public class JChordServer implements Chord.Iface{
                 transport = new TSocket(ip, port);
                 transport.open();
             } catch (TTransportException e) {
-                log.error("Failed to create transport to {}:{} while getting node's routing table", rootNode.getIp(), rootNode.getPort());
+                log.error("Failed to create transport to {}:{} while getting node's routing table", ip, port);
                 throw new RuntimeException(e);
             }
 
-            TProtocol protocol = new TCompactProtocol(transport);
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
             Chord.Client client = new Chord.Client(protocol);
 
             try{
                 remoteNodeFingerTable = client.getFingerTable();
+
             } catch (TException e) {
                 log.error("Failed to get remote JChord Server's routing table");
                 throw new RuntimeException(e);
@@ -212,7 +221,15 @@ public class JChordServer implements Chord.Iface{
         return remoteNodeFingerTable;
     }
 
-    private static NodeInfo remoteFindClosestPrecedingFinger(NodeInfo node, long id){
+    private NodeInfo remoteFindClosestPrecedingFinger(NodeInfo node, long id){
+        if(node.equals(this.thisServerNode)){
+            try{
+                return this.closestPrecedingFinger(id);
+            }catch(TException e){
+                log.error("Failed to find remote JChord Server's closest preceding node for id: {}", id);
+                throw new RuntimeException(e);
+            }
+        }
         return remoteFindClosestPrecedingFinger(node.getIp(), node.getPort(), id);
     }
     private static NodeInfo remoteFindClosestPrecedingFinger(String ip, int port, long id){
@@ -223,30 +240,35 @@ public class JChordServer implements Chord.Iface{
                 transport = new TSocket(ip, port);
                 transport.open();
             } catch (TTransportException e) {
-                log.error("Failed to create transport to node on {}:{} while requesting node for closest preceding node for id: {}", rootNode.getIp(), rootNode.getPort(), id);
+                log.error("Failed to create transport to node on {}:{} while requesting node for closest preceding node for id: {}", ip, port, id);
                 throw new RuntimeException(e);
             }
 
-            TProtocol protocol = new TCompactProtocol(transport);
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
             Chord.Client client = new Chord.Client(protocol);
             try {
                 closestPrecedingFinger  = client.closestPrecedingFinger(id);
+
             } catch (TException e) {
                 log.error("Failed to find remote JChord Server's closest preceding node for id: {}", id);
                 throw new RuntimeException(e);
             }
         }finally{
             if(transport != null){
+
                 transport.close();
             }
         }
         return closestPrecedingFinger;
     }
 
-    private static NodeInfo remoteGetSuccessor(NodeInfo node){
+    private NodeInfo remoteGetSuccessor(NodeInfo node){
+        if(node.equals(this.thisServerNode)){
+            return this.fingerTable.get(1);
+        }
         return remoteGetSuccessor(node.getIp(), node.getPort());
     }
-    private static NodeInfo remoteGetSuccessor(String ip, int port){
+    private NodeInfo remoteGetSuccessor(String ip, int port){
         TTransport transport = null;
         NodeInfo successor = null;
         try{
@@ -254,24 +276,94 @@ public class JChordServer implements Chord.Iface{
                 transport = new TSocket(ip, port);
                 transport.open();
             } catch (TTransportException e) {
-                log.error("Failed to create transport to node on {}:{} while get node's successor", rootNode.getIp(), rootNode.getPort());
+                log.error("Failed to create transport to node on {}:{} while get node's successor", ip, port);
                 throw new RuntimeException(e);
             }
 
-            TProtocol protocol = new TCompactProtocol(transport);
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
             Chord.Client client = new Chord.Client(protocol);
             try {
                 successor  = client.getSuccessor();
+
             } catch (TException e) {
                 log.error("Failed to get remote JChord Server's successor: {}", e.getMessage());
                 throw new RuntimeException(e);
             }
         }finally{
             if(transport != null){
+
                 transport.close();
             }
         }
         return successor;
+    }
+    private NodeInfo remoteGetPredecessor(NodeInfo node){
+        if(node.equals(this.thisServerNode)){
+            return this.fingerTable.get(0);
+        }
+        return remoteGetPredecessor(node.getIp(), node.getPort());
+    }
+    private static NodeInfo remoteGetPredecessor(String ip, int port){
+        TTransport transport = null;
+        NodeInfo predecessor = null;
+        try{
+            try{
+                transport = new TSocket(ip, port);
+                transport.open();
+            } catch (TTransportException e) {
+                log.error("Failed to create transport to node on {}:{} while get node's predecessor", ip, port);
+                throw new RuntimeException(e);
+            }
+
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
+            Chord.Client client = new Chord.Client(protocol);
+            try {
+                predecessor  = client.getPredecessor();
+
+            } catch (TException e) {
+                log.error("Failed to get remote JChord Server's predecessor: {}", e.getMessage());
+                throw new RuntimeException(e);
+            }
+        }finally{
+            if(transport != null){
+
+                transport.close();
+            }
+        }
+        return predecessor;
+    }
+    private void remoteSetPredecessor(NodeInfo remoteNode, NodeInfo newPredecessor){
+        if(remoteNode.equals(this.thisServerNode)){
+            this.fingerTable.set(0, newPredecessor);
+        }
+        remoteSetPredecessor(remoteNode.getIp(), remoteNode.getPort(), newPredecessor);
+    }
+    private void remoteSetPredecessor(String ip, int port, NodeInfo newPredecessor){
+        TTransport transport = null;
+        try{
+            try{
+                transport = new TSocket(ip, port);
+                transport.open();
+            } catch (TTransportException e) {
+                log.error("Failed to create transport to node on {}:{} while get node's successor", ip, port);
+                throw new RuntimeException(e);
+            }
+
+            TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
+            Chord.Client client = new Chord.Client(protocol);
+            try {
+                client.setPredecessor(newPredecessor);
+
+            } catch (TException e) {
+                log.error("Failed to set remote JChord Server's predecessor: {}", e.getMessage());
+                throw new RuntimeException(e);
+            }
+        }finally{
+            if(transport != null){
+
+                transport.close();
+            }
+        }
     }
     public static JChordServer getInstance(final int port, final NodeInfo rootNode){
         if(instance != null){
@@ -297,11 +389,11 @@ public class JChordServer implements Chord.Iface{
                     transport = new TSocket(aux.getIp(),aux.getPort());
                     transport.open();
                 } catch (TTransportException e) {
-                    log.error("Failed to create transport to aux on {}:{} while finding successor", rootNode.getIp(), rootNode.getPort());
+                    log.error("Failed to create transport to aux on {}:{} while finding successor", aux.getIp(), aux.getPort());
                     throw new RuntimeException(e);
                 }
 
-                TProtocol protocol = new TCompactProtocol(transport);
+                TProtocol protocol = T_PROTOCOL_FACTORY.getProtocol(transport);
                 Chord.Client client = new Chord.Client(protocol);
                 aux = client.getSuccessor();
             }finally{
@@ -357,5 +449,15 @@ public class JChordServer implements Chord.Iface{
     @Override
     public NodeInfo getSuccessor() throws TException {
         return this.fingerTable.get(1);
+    }
+
+    @Override
+    public NodeInfo getPredecessor() throws TException {
+        return this.fingerTable.get(0);
+    }
+
+    @Override
+    public void setPredecessor(NodeInfo n) throws TException {
+        this.fingerTable.set(0, n);
     }
 }
