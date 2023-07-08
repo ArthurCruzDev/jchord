@@ -141,8 +141,8 @@ public class JChordServer implements Chord.Iface{
             }
             int lastUsefulIndex = 1;
             for(int i = 1; i <= IKeyNodeIdentifierMaker.NUM_BITS; i++){
-                long keyNumber = calculateFingerTableKeyNumberByIndex(i);
-                if(lastUsefulIndex != -1 && keyNumber > this.fingerTable.get(lastUsefulIndex).getId()){
+                long keyNumber = calculateFingerTableKeyNumberByIndex(this.thisServerNode.id, i);
+                if(lastUsefulIndex != -1 && keyNumber < this.fingerTable.get(lastUsefulIndex).getId()){
                     boolean found = false;
                     for(int j = i+1; j < this.fingerTable.size(); j++){
                         if(keyNumber <= this.fingerTable.get(j).getId()){
@@ -158,7 +158,9 @@ public class JChordServer implements Chord.Iface{
                 }else{
                     try{
                         try{
-                            transport = new TSocket(this.fingerTable.get(this.fingerTable.size() - 1).getIp(),this.fingerTable.get(this.fingerTable.size() - 1).getPort());
+                            transport = new TSocket(this.fingerTable.get(this.fingerTable.size() - 1).getIp(),
+                                                    this.fingerTable.get(this.fingerTable.size() - 1).getPort()
+                                            );
                             transport.open();
                         } catch (TTransportException e) {
                             log.error("Failed to create transport to successor on {}:{} while initializing routing table", rootNode.getIp(), rootNode.getPort());
@@ -192,7 +194,7 @@ public class JChordServer implements Chord.Iface{
             stringBuffer
                     .append(i)
                     .append(" | ")
-                    .append(calculateFingerTableKeyNumberByIndex(i))
+                    .append(calculateFingerTableKeyNumberByIndex(this.thisServerNode.id, i))
                     .append(" | ")
                     .append(nodeInfo.getId())
                     .append(" -> ")
@@ -203,8 +205,8 @@ public class JChordServer implements Chord.Iface{
         }
         log.info("Current JChord Server's routing table: {}", stringBuffer);
     }
-    private long calculateFingerTableKeyNumberByIndex(int index){
-        return ( this.thisServerNode.id + (long) Math.pow(2.0, index - 1.0) ) % (long) Math.pow(2.0, IKeyNodeIdentifierMaker.NUM_BITS);
+    private long calculateFingerTableKeyNumberByIndex(long baseId, int index){
+        return ( baseId + (long) Math.pow(2.0, index - 1.0) ) % (long) Math.pow(2.0, IKeyNodeIdentifierMaker.NUM_BITS);
     }
     public static JChordServer getInstance(final int port, final NodeInfo rootNode){
         if(instance != null){
@@ -225,17 +227,74 @@ public class JChordServer implements Chord.Iface{
 
     @Override
     public NodeInfo findSuccessor(long id) throws UnableToFindSuccessorException, TException {
-        return null;
+        NodeInfo aux = this.findPredecessor(id);
+        if(aux.equals(this.thisServerNode)){
+            return this.fingerTable.get(1);
+        }else{
+            TTransport transport = null;
+            try{
+                try{
+                    transport = new TSocket(aux.getIp(),aux.getPort());
+                    transport.open();
+                } catch (TTransportException e) {
+                    log.error("Failed to create transport to aux on {}:{} while finding successor", rootNode.getIp(), rootNode.getPort());
+                    throw new RuntimeException(e);
+                }
+
+                TProtocol protocol = new TCompactProtocol(transport);
+                Chord.Client client = new Chord.Client(protocol);
+                aux = client.getSuccessor();
+            }finally{
+                if(transport != null){
+                    transport.close();
+                }
+            }
+            return aux;
+        }
     }
 
     @Override
     public NodeInfo findPredecessor(long id) throws UnableToFindPredecessorException, TException {
-        return null;
+        NodeInfo aux = this.thisServerNode;
+        NodeInfo successor = this.fingerTable.get(1);
+
+        while(id <= aux.getId() && id > successor.getId()){
+            aux = this.closestPrecedingFinger(id);
+            TTransport transport = null;
+            try{
+                try{
+                    transport = new TSocket(aux.getIp(),aux.getPort());
+                    transport.open();
+                } catch (TTransportException e) {
+                    log.error("Failed to create transport to aux on {}:{} while finding predecessor", rootNode.getIp(), rootNode.getPort());
+                    throw new RuntimeException(e);
+                }
+
+                TProtocol protocol = new TCompactProtocol(transport);
+                Chord.Client client = new Chord.Client(protocol);
+                if(aux.equals(this.thisServerNode)) {
+                    aux = this.closestPrecedingFinger(id);
+                }else{
+                    aux = client.closestPrecedingFinger(id);
+                }
+                successor = client.getSuccessor();
+            }finally{
+                if(transport != null){
+                    transport.close();
+                }
+            }
+        }
+        return aux;
     }
 
     @Override
     public NodeInfo closestPrecedingFinger(long id) throws UnableToFindClosestPrecedingFingerException, TException {
-        return null;
+        for(int i = IKeyNodeIdentifierMaker.NUM_BITS; i > 0; i--){
+            if(calculateFingerTableKeyNumberByIndex(this.thisServerNode.id, i) < id){
+                return this.fingerTable.get(i);
+            }
+        }
+        return this.thisServerNode;
     }
 
     @Override
@@ -251,5 +310,10 @@ public class JChordServer implements Chord.Iface{
     @Override
     public List<NodeInfo> getFingerTable() throws TException {
         return this.fingerTable;
+    }
+
+    @Override
+    public NodeInfo getSuccessor() throws TException {
+        return this.fingerTable.get(1);
     }
 }

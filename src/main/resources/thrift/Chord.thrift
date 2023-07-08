@@ -68,4 +68,5 @@ service Chord{
     list<binary> transferKeys(1:NodeInfo n) throws(1:UnableToTransferKeysException ex),
     void notify(1:NodeInfo n) throws(1:UnableToNotifyException ex),
     list<NodeInfo> getFingerTable(),
+    NodeInfo getSuccessor(),
 }
